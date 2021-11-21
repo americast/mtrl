@@ -40,7 +40,7 @@ class TaskEncoder(base_component.Component):
                 metadata = json.load(f)
             ordered_task_list = pretrained_embedding_cfg.ordered_task_list
             pretrained_embedding = torch.Tensor(
-                [metadata[task] for task in ordered_task_list]
+                [metadata[task[:-1]+"1"] for task in ordered_task_list]
             )
             assert num_embeddings == pretrained_embedding.shape[0]
             pretrained_embedding_dim = pretrained_embedding.shape[1]
