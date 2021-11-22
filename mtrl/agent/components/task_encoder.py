@@ -2,7 +2,7 @@
 """Component to encode the task."""
 
 import json
-
+import pudb
 import torch
 import torch.nn as nn
 
@@ -35,10 +35,22 @@ class TaskEncoder(base_component.Component):
             output_dim (int): output dimension of the task encoder.
         """
         super().__init__()
-        if pretrained_embedding_cfg.should_use:
-            with open(pretrained_embedding_cfg.path_to_load_from) as f:
+        # pass
+        # pu.db
+        # pass
+        try:
+            pecsu = pretrained_embedding_cfg.should_use
+            pecptlf = pretrained_embedding_cfg.path_to_load_from
+            pecotl = pretrained_embedding_cfg.ordered_task_list
+        except:
+            pecsu = pretrained_embedding_cfg["should_use"]
+            pecptlf = pretrained_embedding_cfg["path_to_load_from"]
+            pecotl = pretrained_embedding_cfg["ordered_task_list"]
+
+        if pecsu:
+            with open(pecptlf) as f:
                 metadata = json.load(f)
-            ordered_task_list = pretrained_embedding_cfg.ordered_task_list
+            ordered_task_list = pecotl
             pretrained_embedding = torch.Tensor(
                 [metadata[task[:-1]+"1"] for task in ordered_task_list]
             )

@@ -2,10 +2,10 @@
 import shutil
 import time
 from typing import List
-
+import pudb
 import hydra
 import torch
-
+import mtrl
 from mtrl.utils.types import ConfigType
 from mtrl.utils.utils import set_seed
 
@@ -20,9 +20,11 @@ def prepare_and_run(config: ConfigType) -> None:
     set_seed(seed=config.setup.seed)
     print(f"Starting Experiment at {time.asctime(time.localtime(time.time()))}")
     print(f"torch version = {torch.__version__}")  # type: ignore
-    experiment = hydra.utils.instantiate(
-        config.experiment.builder, config
-    )  # cant seem to pass as a kwargs
+    try:
+        experiment = hydra.utils.instantiate(
+            config.experiment.builder, config
+        )  # cant seem to pass as a kwargs
+    except: experiment = mtrl.experiment.metaworld.Experiment(config)
     experiment.run()
 
 

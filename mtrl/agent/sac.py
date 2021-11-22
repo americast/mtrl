@@ -3,7 +3,7 @@
 # Implementation based on Denis Yarats' implementation of [SAC](https://github.com/denisyarats/pytorch_sac).
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
-
+import mtrl
 import hydra
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ from mtrl.env.types import ObsType
 from mtrl.logger import Logger
 from mtrl.replay_buffer import ReplayBuffer, ReplayBufferSample
 from mtrl.utils.types import ConfigType, ModelType, ParameterType, TensorType
-
+import pudb
 
 class Agent(AbstractAgent):
     """SAC algorithm."""
@@ -34,6 +34,7 @@ class Agent(AbstractAgent):
         actor_optimizer_cfg: ConfigType,
         critic_optimizer_cfg: ConfigType,
         multitask_cfg: ConfigType,
+        global_config: ConfigType,
         discount: float,
         init_temperature: float,
         actor_update_freq: int,
@@ -42,7 +43,7 @@ class Agent(AbstractAgent):
         encoder_tau: float,
         loss_reduction: str = "mean",
         cfg_to_load_model: Optional[ConfigType] = None,
-        should_complete_init: bool = True,
+        should_complete_init: bool = True
     ):
         super().__init__(
             env_obs_shape=env_obs_shape,
@@ -53,7 +54,7 @@ class Agent(AbstractAgent):
         )
 
         self.should_use_task_encoder = self.multitask_cfg.should_use_task_encoder
-
+        self.global_config = global_config
         self.discount = discount
         self.critic_tau = critic_tau
         self.encoder_tau = encoder_tau
@@ -112,9 +113,19 @@ class Agent(AbstractAgent):
         }
 
         if self.should_use_task_encoder:
-            self.task_encoder = hydra.utils.instantiate(
-                self.multitask_cfg.task_encoder_cfg.model_cfg,
-            ).to(self.device)
+            try:
+                self.task_encoder = hydra.utils.instantiate(
+                    self.multitask_cfg.task_encoder_cfg.model_cfg,
+                ).to(self.device)
+            except:
+                self.task_encoder = mtrl.agent.components.task_encoder.TaskEncoder(
+                    pretrained_embedding_cfg= {'should_use': True, 'path_to_load_from': '/home/ssinha97/mtrl/metadata/task_embedding/roberta_small/'+self.global_config.env.name+'.json', 'ordered_task_list': self.global_config.env.ordered_task_list},
+                    num_embeddings= self.global_config.env.num_envs,
+                    embedding_dim= 50,
+                    hidden_dim= 50,
+                    num_layers= 2,
+                    output_dim= 50,
+                )
             name = "task_encoder"
             self._components[name] = self.task_encoder
             self.task_encoder_optimizer = hydra.utils.instantiate(
