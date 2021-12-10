@@ -8,7 +8,7 @@ import torch
 import mtrl
 from mtrl.utils.types import ConfigType
 from mtrl.utils.utils import set_seed
-
+import os
 
 def prepare_and_run(config: ConfigType) -> None:
     """Prepare an experiment and run the experiment.
@@ -25,7 +25,12 @@ def prepare_and_run(config: ConfigType) -> None:
             config.experiment.builder, config
         )  # cant seem to pass as a kwargs
     except: experiment = mtrl.experiment.metaworld.Experiment(config)
-    experiment.run()
+    if config.collect_buffer:
+        buffer_here = experiment.collect_trajectory_buffer(1000)
+    else:
+        experiment.run()
+    buffer_here.save(os.getcwd()+"/buffer")
+    pass
 
 
 def clear(config: ConfigType) -> None:

@@ -8,7 +8,7 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-
+import os
 from mtrl.agent import utils as agent_utils
 from mtrl.agent.abstract import Agent as AbstractAgent
 from mtrl.agent.ds.mt_obs import MTObs
@@ -43,7 +43,8 @@ class Agent(AbstractAgent):
         encoder_tau: float,
         loss_reduction: str = "mean",
         cfg_to_load_model: Optional[ConfigType] = None,
-        should_complete_init: bool = True
+        should_complete_init: bool = True,
+        demo_actor_pth = None
     ):
         super().__init__(
             env_obs_shape=env_obs_shape,
@@ -63,6 +64,7 @@ class Agent(AbstractAgent):
         self.actor = hydra.utils.instantiate(
             actor_cfg, env_obs_shape=env_obs_shape, action_shape=action_shape
         ).to(self.device)
+        self.demo_actor_pth = demo_actor_pth
 
         self.critic = hydra.utils.instantiate(
             critic_cfg, env_obs_shape=env_obs_shape, action_shape=action_shape
@@ -136,6 +138,8 @@ class Agent(AbstractAgent):
 
         if should_complete_init:
             self.complete_init(cfg_to_load_model=cfg_to_load_model)
+        if self.demo_actor_pth is not None:
+            self.actor.load_state_dict(torch.load("../../../"+self.demo_actor_pth))
 
     def complete_init(self, cfg_to_load_model: Optional[ConfigType]):
         if cfg_to_load_model:
@@ -250,6 +254,28 @@ class Agent(AbstractAgent):
             return None
         if component_name not in self._components:
             raise ValueError(f"""Component named {component_name} does not exist""")
+
+    def _compute_gradient_airl(
+            self,
+            loss: TensorType,
+            parameters: List[ParameterType],
+            step: int,
+            component_names: List[str],
+            retain_graph: bool = False,
+        ):
+            """Method to override the gradient computation.
+
+                Useful for algorithms like PCGrad and GradNorm.
+
+            Args:
+                loss (TensorType):
+                parameters (List[ParameterType]):
+                step (int): step for tracking the training of the agent.
+                component_names (List[str]):
+                retain_graph (bool, optional): if it should retain graph. Defaults to False.
+            """
+            if self.demo_actor_pth is None:
+                loss.backward(retain_graph=retain_graph)
 
     def _compute_gradient(
         self,
@@ -445,6 +471,8 @@ class Agent(AbstractAgent):
             component_names=["log_alpha"],
             **kwargs_to_compute_gradient,
         )
+        if self.demo_actor_pth is None:
+            torch.save(self.actor.state_dict(), "actor.pth")
         self.log_alpha_optimizer.step()
 
     def get_task_info(

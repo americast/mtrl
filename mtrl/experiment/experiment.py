@@ -71,6 +71,7 @@ class Experiment(checkpointable.Checkpointable):
                     float(self.action_space.high.max()),
                 ],
                 device=self.device,
+                demo = self.config.demo_actor_pth
             )
         except:
             self.agent = mtrl.agent.sac.Agent(
@@ -93,7 +94,8 @@ class Experiment(checkpointable.Checkpointable):
                     float(self.action_space.high.max()),
                 ],
                 device=self.device,
-                global_config = self.config
+                global_config = self.config,
+                demo_actor_pth = self.config.demo_actor_pth
             )
         
         
