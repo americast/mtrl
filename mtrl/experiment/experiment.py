@@ -61,42 +61,47 @@ class Experiment(checkpointable.Checkpointable):
         action_shape = self.action_space.shape
 
         self.config = prepare_config(config=self.config, env_metadata=self.env_metadata)
-        try:
-            self.agent = hydra.utils.instantiate(
-                self.config.agent.builder,
-                env_obs_shape=env_obs_shape,
-                action_shape=action_shape,
-                action_range=[
-                    float(self.action_space.low.min()),
-                    float(self.action_space.high.max()),
-                ],
-                device=self.device,
-                demo = self.config.demo_actor_pth
-            )
-        except:
-            self.agent = mtrl.agent.sac.Agent(
-                actor_cfg= self.config.agent.actor,
-                critic_cfg= self.config.agent.critic,
-                multitask_cfg= self.config.agent.multitask,
-                alpha_optimizer_cfg= self.config.agent.optimizers.alpha,
-                actor_optimizer_cfg= self.config.agent.optimizers.actor,
-                critic_optimizer_cfg= self.config.agent.optimizers.critic,
-                discount= 0.99,
-                init_temperature= 1.0,
-                actor_update_freq= 1,
-                critic_tau= 0.005,
-                critic_target_update_freq= 1,
-                encoder_tau= 0.05,
-                env_obs_shape=env_obs_shape,
-                action_shape=action_shape,
-                action_range=[
-                    float(self.action_space.low.min()),
-                    float(self.action_space.high.max()),
-                ],
-                device=self.device,
-                global_config = self.config,
-                demo_actor_pth = self.config.demo_actor_pth
-            )
+        # if self.config.expert_file == "None":
+        #     self.config.expert_file = None
+        # pu.db
+        # try:
+        self.agent = hydra.utils.instantiate(
+            self.config.agent.builder,
+            env_obs_shape=env_obs_shape,
+            action_shape=action_shape,
+            action_range=[
+                float(self.action_space.low.min()),
+                float(self.action_space.high.max()),
+            ],
+            global_config = self.config,
+            device=self.device,
+            demo_actor_pth = self.config.demo_actor_pth,
+            expert_file = self.config.expert_file
+        )
+        # except:
+        #     self.agent = mtrl.agent.sac.Agent(
+        #         actor_cfg= self.config.agent.actor,
+        #         critic_cfg= self.config.agent.critic,
+        #         multitask_cfg= self.config.agent.multitask,
+        #         alpha_optimizer_cfg= self.config.agent.optimizers.alpha,
+        #         actor_optimizer_cfg= self.config.agent.optimizers.actor,
+        #         critic_optimizer_cfg= self.config.agent.optimizers.critic,
+        #         discount= 0.99,
+        #         init_temperature= 1.0,
+        #         actor_update_freq= 1,
+        #         critic_tau= 0.005,
+        #         critic_target_update_freq= 1,
+        #         encoder_tau= 0.05,
+        #         env_obs_shape=env_obs_shape,
+        #         action_shape=action_shape,
+        #         action_range=[
+        #             float(self.action_space.low.min()),
+        #             float(self.action_space.high.max()),
+        #         ],
+        #         device=self.device,
+        #         global_config = self.config,
+        #         demo_actor_pth = self.config.demo_actor_pth
+        #     )
         
         
 

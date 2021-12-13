@@ -18,6 +18,8 @@ from mtrl.logger import Logger
 from mtrl.replay_buffer import ReplayBuffer, ReplayBufferSample
 from mtrl.utils.types import ConfigType, ModelType, ParameterType, TensorType
 import pudb
+from mtrl.ppo_org.gail_airl_ppo.network.disc import AIRLDiscrim
+from torch.optim import Adam
 
 class Agent(AbstractAgent):
     """SAC algorithm."""
@@ -44,6 +46,7 @@ class Agent(AbstractAgent):
         loss_reduction: str = "mean",
         cfg_to_load_model: Optional[ConfigType] = None,
         should_complete_init: bool = True,
+        expert_file = None,
         demo_actor_pth = None
     ):
         super().__init__(
@@ -53,7 +56,6 @@ class Agent(AbstractAgent):
             multitask_cfg=multitask_cfg,
             device=device,
         )
-
         self.should_use_task_encoder = self.multitask_cfg.should_use_task_encoder
         self.global_config = global_config
         self.discount = discount
@@ -107,6 +109,7 @@ class Agent(AbstractAgent):
             )
 
         self.loss_reduction = loss_reduction
+        self.expert_file = expert_file
 
         self._optimizers = {
             "actor": self.actor_optimizer,
@@ -140,6 +143,22 @@ class Agent(AbstractAgent):
             self.complete_init(cfg_to_load_model=cfg_to_load_model)
         if self.demo_actor_pth is not None:
             self.actor.load_state_dict(torch.load("../../../"+self.demo_actor_pth))
+        if self.expert_file != "None":
+            # Discriminator.
+            self.disc = AIRLDiscrim(
+                state_shape=env_obs_shape,
+                gamma=0.995
+                # hidden_units_r=units_disc_r,
+                # hidden_units_v=units_disc_v,
+                # hidden_activation_r=nn.ReLU(inplace=True),
+                # hidden_activation_v=nn.ReLU(inplace=True)
+            ).to(device)
+
+            self.learning_steps_disc = 0
+            self.optim_disc = Adam(self.disc.parameters(), lr=3e-4)
+            self.epoch_disc = 10
+            self.expert_buffer = torch.load(self.expert_file)
+
 
     def complete_init(self, cfg_to_load_model: Optional[ConfigType]):
         if cfg_to_load_model:
@@ -255,12 +274,13 @@ class Agent(AbstractAgent):
         if component_name not in self._components:
             raise ValueError(f"""Component named {component_name} does not exist""")
 
-    def _compute_gradient_airl(
+    def _compute_gradient(
             self,
             loss: TensorType,
             parameters: List[ParameterType],
             step: int,
             component_names: List[str],
+            type = None,
             retain_graph: bool = False,
         ):
             """Method to override the gradient computation.
@@ -274,29 +294,29 @@ class Agent(AbstractAgent):
                 component_names (List[str]):
                 retain_graph (bool, optional): if it should retain graph. Defaults to False.
             """
-            if self.demo_actor_pth is None:
+            if self.demo_actor_pth is None or type is not None:
                 loss.backward(retain_graph=retain_graph)
 
-    def _compute_gradient(
-        self,
-        loss: TensorType,
-        parameters: List[ParameterType],
-        step: int,
-        component_names: List[str],
-        retain_graph: bool = False,
-    ):
-        """Method to override the gradient computation.
+    # def _compute_gradient(
+    #     self,
+    #     loss: TensorType,
+    #     parameters: List[ParameterType],
+    #     step: int,
+    #     component_names: List[str],
+    #     retain_graph: bool = False,
+    # ):
+    #     """Method to override the gradient computation.
 
-            Useful for algorithms like PCGrad and GradNorm.
+    #         Useful for algorithms like PCGrad and GradNorm.
 
-        Args:
-            loss (TensorType):
-            parameters (List[ParameterType]):
-            step (int): step for tracking the training of the agent.
-            component_names (List[str]):
-            retain_graph (bool, optional): if it should retain graph. Defaults to False.
-        """
-        loss.backward(retain_graph=retain_graph)
+    #     Args:
+    #         loss (TensorType):
+    #         parameters (List[ParameterType]):
+    #         step (int): step for tracking the training of the agent.
+    #         component_names (List[str]):
+    #         retain_graph (bool, optional): if it should retain graph. Defaults to False.
+    #     """
+    #     loss.backward(retain_graph=retain_graph)
 
     def _get_target_V(
         self, batch: ReplayBufferSample, task_info: TaskInfo
@@ -445,6 +465,7 @@ class Agent(AbstractAgent):
             parameters=parameters,
             step=step,
             component_names=component_names,
+            type="actor",
             **kwargs_to_compute_gradient,
         )
         self.actor_optimizer.step()
@@ -599,7 +620,8 @@ class Agent(AbstractAgent):
             batch = replay_buffer.sample()
         else:
             batch = replay_buffer.sample(buffer_index_to_sample)
-
+        # pu.db
+        # pass
         logger.log("train/batch_reward", batch.reward.mean(), step)
         if self.should_use_task_encoder:
             self.task_encoder_optimizer.zero_grad()
@@ -715,3 +737,31 @@ class Agent(AbstractAgent):
             return list(self.critic.encoder.parameters())
         else:
             return list(self._components[name].parameters())
+
+    def update_disc(self, states, dones, log_pis, next_states,
+                    states_exp, dones_exp, log_pis_exp,
+                    next_states_exp, writer):
+        # Output of discriminator is (-inf, inf), not [0, 1].
+        logits_pi = self.disc(states, dones, log_pis, next_states)
+        logits_exp = self.disc(
+            states_exp, dones_exp, log_pis_exp, next_states_exp)
+
+        # Discriminator is to maximize E_{\pi} [log(1 - D)] + E_{exp} [log(D)].
+        loss_pi = -F.logsigmoid(-logits_pi).mean()
+        loss_exp = -F.logsigmoid(logits_exp).mean()
+        loss_disc = loss_pi + loss_exp
+
+        self.optim_disc.zero_grad()
+        loss_disc.backward()
+        self.optim_disc.step()
+
+        if self.learning_steps_disc % self.epoch_disc == 0:
+            writer.add_scalar(
+                'loss/disc', loss_disc.item(), self.learning_steps)
+
+            # Discriminator's accuracies.
+            with torch.no_grad():
+                acc_pi = (logits_pi < 0).float().mean().item()
+                acc_exp = (logits_exp > 0).float().mean().item()
+            writer.add_scalar('stats/acc_pi', acc_pi, self.learning_steps)
+            writer.add_scalar('stats/acc_exp', acc_exp, self.learning_steps)

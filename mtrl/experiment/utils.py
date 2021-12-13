@@ -26,11 +26,11 @@ def prepare_and_run(config: ConfigType) -> None:
         )  # cant seem to pass as a kwargs
     except: experiment = mtrl.experiment.metaworld.Experiment(config)
     if config.collect_buffer:
-        buffer_here = experiment.collect_trajectory_buffer(1000)
+        buffer_here = experiment.collect_trajectory_buffer(10000)
+        buffer_here.save(os.getcwd()+"/buffer")
+        print("Buffer saved at "+os.getcwd()+"/buffer")
     else:
         experiment.run()
-    buffer_here.save(os.getcwd()+"/buffer")
-    pass
 
 
 def clear(config: ConfigType) -> None:
