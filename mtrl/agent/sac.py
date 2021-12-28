@@ -143,6 +143,7 @@ class Agent(AbstractAgent):
             self.complete_init(cfg_to_load_model=cfg_to_load_model)
         if self.demo_actor_pth is not None:
             self.actor.load_state_dict(torch.load("../../../"+self.demo_actor_pth))
+        
         if self.expert_file != "None":
             # Discriminator.
             self.disc = AIRLDiscrim(
@@ -157,7 +158,34 @@ class Agent(AbstractAgent):
             self.learning_steps_disc = 0
             self.optim_disc = Adam(self.disc.parameters(), lr=3e-4)
             self.epoch_disc = 10
-            self.expert_buffer = torch.load(self.expert_file)
+            self.expert_buffer_dict = torch.load(self.expert_file)
+            self.expert_buffer = hydra.utils.instantiate(
+                self.global_config.replay_buffer,
+                device=self.device,
+                env_obs_shape=env_obs_shape,
+                task_obs_shape=(1,),
+                action_shape=action_shape,
+            )
+            for bidx in range(len(self.expert_buffer_dict["done"])):
+                for env_id in range(self.expert_buffer_dict["state"][bidx].shape[0]):
+                    state = self.expert_buffer_dict["state"][bidx][env_id,:]
+                    action = self.expert_buffer_dict["action"][bidx][env_id,:]
+                    reward = self.expert_buffer_dict["reward"][bidx][env_id]
+                    done = self.expert_buffer_dict["done"][bidx][env_id]
+                    next_state = self.expert_buffer_dict["next_state"][bidx][env_id,:]
+                    try:
+                        self.expert_buffer.add(state, action, reward, next_state, done > 0, [env_id])
+                    except: pu.db
+
+                # state = self.expert_buffer_dict["state"][bidx]
+                # action = self.expert_buffer_dict["action"][bidx]
+                # reward = self.expert_buffer_dict["reward"][bidx]
+                # done = self.expert_buffer_dict["done"][bidx]
+                # next_state = self.expert_buffer_dict["next_state"][bidx]
+                # try:
+                #     self.expert_buffer.add(state, action, reward, next_state, done > 0, [0])
+                # except: pu.db
+
 
 
     def complete_init(self, cfg_to_load_model: Optional[ConfigType]):
@@ -356,9 +384,17 @@ class Agent(AbstractAgent):
             kwargs_to_compute_gradient (Dict[str, Any]):
 
         """
-        with torch.no_grad():
-            target_V = self._get_target_V(batch=batch, task_info=task_info)
-            target_Q = batch.reward + (batch.not_done * self.discount * target_V)
+        # pu.db
+        # print("")
+        if self.expert_file is not "None":
+            # print("")
+            with torch.no_grad():
+                target_V = self._get_target_V(batch=self.expert_batch, task_info=task_info)
+                target_Q = self.expert_batch.reward + (self.expert_batch.not_done * self.discount * target_V)
+        else:
+            with torch.no_grad():
+                target_V = self._get_target_V(batch=batch, task_info=task_info)
+                target_Q = batch.reward + (batch.not_done * self.discount * target_V)
 
         # get current Q estimates
         mtobs = MTObs(env_obs=batch.env_obs, task_obs=None, task_info=task_info)
@@ -621,6 +657,8 @@ class Agent(AbstractAgent):
         else:
             batch = replay_buffer.sample(buffer_index_to_sample)
         # pu.db
+        # print("")
+        self.expert_batch = self.expert_buffer.sample()
         # pass
         logger.log("train/batch_reward", batch.reward.mean(), step)
         if self.should_use_task_encoder:

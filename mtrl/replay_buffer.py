@@ -63,7 +63,10 @@ class ReplayBuffer(object):
         np.copyto(self.actions[self.idx], action)
         np.copyto(self.rewards[self.idx], reward)
         np.copyto(self.next_env_obses[self.idx], next_env_obs)
-        np.copyto(self.not_dones[self.idx], not done)
+        try:
+            np.copyto(self.not_dones[self.idx], ~done)
+        except:
+            np.copyto(self.not_dones[self.idx], not done)
         np.copyto(self.task_obs[self.idx], task_obs)
 
         self.idx = (self.idx + 1) % self.capacity

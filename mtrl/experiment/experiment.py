@@ -118,7 +118,8 @@ class Experiment(checkpointable.Checkpointable):
         self.video = video.VideoRecorder(
             self.video_dir if self.config.experiment.save_video else None
         )
-
+        # pu.db
+        # print("")
         self.replay_buffer = hydra.utils.instantiate(
             self.config.replay_buffer,
             device=self.device,
