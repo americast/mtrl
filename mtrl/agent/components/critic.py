@@ -6,7 +6,7 @@ from typing import List, Tuple
 
 import torch
 from torch import nn
-
+import pudb
 from mtrl.agent import utils as agent_utils
 from mtrl.agent.components import base as base_component
 from mtrl.agent.components import encoder, moe_layer
@@ -390,7 +390,10 @@ class Critic(base_component.Component):
         encoding = self.encoder(mtobs=mtobs, detach=detach)
         task_info = mtobs.task_info
         if self.should_concatenate_task_info_with_encoder:
-            return torch.cat((encoding, task_info.encoding), dim=1)  # type: ignore[arg-type, union-attr]
+            try:
+                return torch.cat((encoding, task_info.encoding), dim=1)  # type: ignore[arg-type, union-attr]
+            except:
+                return torch.cat((encoding, task_info.encoding.squeeze(1)), dim=1)  # type: ignore[arg-type, union-attr]
             # mypy is raising a false alarm. task_info is not None
         return encoding
 

@@ -380,8 +380,16 @@ class Actor(BaseActor):
     def encode(self, mtobs: MTObs, detach: bool = False) -> TensorType:
         encoding = self.encoder(mtobs=mtobs, detach=detach)
         task_info = mtobs.task_info
+        # pu.db
+        # print("")
         if self.should_concatenate_task_info_with_encoder:
-            return torch.cat((encoding, task_info.encoding), dim=1)  # type: ignore[arg-type, union-attr]
+            try:
+                if len(task_info.encoding.shape) > 2:
+                    return torch.cat((encoding, task_info.encoding.squeeze(1)), dim=1)  # type: ignore[arg-type, union-attr]
+                else:
+                    return torch.cat((encoding, task_info.encoding), dim=1)  # type: ignore[arg-type, union-attr]
+            except:
+                pu.db
             # mypy is raising a false alarm. task_info is not None
         return encoding
 
@@ -392,7 +400,9 @@ class Actor(BaseActor):
     ) -> Tuple[TensorType, TensorType, TensorType, TensorType]:
         task_info = mtobs.task_info
         assert task_info is not None
-        if self.should_condition_encoder_on_task_info:
+        # pu.db
+        # print("")
+        if self.should_condition_encoder_on_task_info and False:
             obs = self.encode(mtobs=mtobs, detach=detach_encoder)
         else:
             # making a new task_info since we do not want to condition on
@@ -405,8 +415,11 @@ class Actor(BaseActor):
             temp_mtobs = MTObs(
                 env_obs=mtobs.env_obs, task_obs=mtobs.task_obs, task_info=temp_task_info
             )
-            obs = self.encode(temp_mtobs, detach=detach_encoder)
-        if self.should_condition_model_on_task_info:
+            if self.should_condition_encoder_on_task_info:
+                obs = self.encode(mtobs=mtobs, detach=detach_encoder)
+            else:
+                obs = self.encode(temp_mtobs, detach=detach_encoder)
+        if self.should_condition_model_on_task_info and False:
             new_mtobs = MTObs(
                 env_obs=obs, task_obs=mtobs.task_obs, task_info=mtobs.task_info
             )

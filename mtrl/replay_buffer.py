@@ -18,6 +18,7 @@ class ReplayBufferSample:
         "reward",
         "next_env_obs",
         "not_done",
+        "done",
         "task_obs",
         "buffer_index",
     ]
@@ -26,6 +27,7 @@ class ReplayBufferSample:
     reward: TensorType
     next_env_obs: TensorType
     not_done: TensorType
+    done: TensorType
     task_obs: TensorType
     buffer_index: TensorType
 
@@ -49,6 +51,7 @@ class ReplayBuffer(object):
         self.actions = np.empty((capacity, *action_shape), dtype=np.float32)
         self.rewards = np.empty((capacity, 1), dtype=np.float32)
         self.not_dones = np.empty((capacity, 1), dtype=np.float32)
+        self.dones = np.empty((capacity, 1), dtype=np.float32)
         self.task_obs = np.empty((capacity, *task_obs_shape), dtype=task_obs_dtype)
 
         self.idx = 0
@@ -67,6 +70,10 @@ class ReplayBuffer(object):
             np.copyto(self.not_dones[self.idx], ~done)
         except:
             np.copyto(self.not_dones[self.idx], not done)
+        try:
+            np.copyto(self.dones[self.idx], done)
+        except:
+            np.copyto(self.dones[self.idx], not done)
         np.copyto(self.task_obs[self.idx], task_obs)
 
         self.idx = (self.idx + 1) % self.capacity
@@ -87,10 +94,11 @@ class ReplayBuffer(object):
             self.next_env_obses[idxs], device=self.device
         ).float()
         not_dones = torch.as_tensor(self.not_dones[idxs], device=self.device)
+        dones = torch.as_tensor(self.dones[idxs], device=self.device)
         env_indices = torch.as_tensor(self.task_obs[idxs], device=self.device)
 
         return ReplayBufferSample(
-            env_obses, actions, rewards, next_env_obses, not_dones, env_indices, idxs
+            env_obses, actions, rewards, next_env_obses, not_dones, dones, env_indices, idxs
         )
 
     def sample_an_index(
@@ -116,6 +124,7 @@ class ReplayBuffer(object):
             self.next_env_obses[idxs], device=self.device
         ).float()
         not_dones = torch.as_tensor(self.not_dones[idxs], device=self.device)
+        dones = torch.as_tensor(self.dones[idxs], device=self.device)
         env_indices = torch.as_tensor(self.task_obs[idxs], device=self.device)
 
         return ReplayBufferSample(

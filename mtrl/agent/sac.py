@@ -21,6 +21,22 @@ import pudb
 from mtrl.ppo_org.gail_airl_ppo.network.disc import AIRLDiscrim
 from torch.optim import Adam
 
+def calculate_gae(values, rewards, dones, next_values, gamma, lambd):
+    # Calculate TD errors.
+    # pu.db
+    # print("")
+    with torch.no_grad():
+        deltas = rewards + gamma * next_values * (1 - dones) - values
+        # Initialize gae.
+        gaes = torch.empty_like(rewards)
+
+        # Calculate gae recursively from behind.
+        gaes[-1] = deltas[-1]
+        for t in reversed(range(rewards.size(0) - 1)):
+            gaes[t] = deltas[t] + gamma * lambd * (1 - dones[t]) * gaes[t + 1]
+
+        return gaes + values, (gaes - gaes.mean()) / (gaes.std() + 1e-8)
+
 class Agent(AbstractAgent):
     """SAC algorithm."""
 
@@ -67,11 +83,13 @@ class Agent(AbstractAgent):
             actor_cfg, env_obs_shape=env_obs_shape, action_shape=action_shape
         ).to(self.device)
         self.demo_actor_pth = demo_actor_pth
-
+        # pu.db
         self.critic = hydra.utils.instantiate(
             critic_cfg, env_obs_shape=env_obs_shape, action_shape=action_shape
         ).to(self.device)
-
+        self.optim_actor = Adam(self.actor.parameters(), lr=3e-4)
+        self.optim_critic = Adam(self.critic.parameters(), lr=3e-4)
+        self.learning_steps_ppo = 0
         self.critic_target = hydra.utils.instantiate(
             critic_cfg, env_obs_shape=env_obs_shape, action_shape=action_shape
         ).to(self.device)
@@ -86,7 +104,7 @@ class Agent(AbstractAgent):
         # self.log_alpha.requires_grad = True
         # set target entropy to -|A|
         self.target_entropy = -np.prod(action_shape)
-
+        self._p = 0
         self._components = {
             "actor": self.actor,
             "critic": self.critic,
@@ -384,8 +402,7 @@ class Agent(AbstractAgent):
             kwargs_to_compute_gradient (Dict[str, Any]):
 
         """
-        # pu.db
-        # print("")
+        
         if self.expert_file is not "None":
             # print("")
             with torch.no_grad():
@@ -622,6 +639,61 @@ class Agent(AbstractAgent):
         """
         raise NotImplementedError("This method is not implemented for SAC agent.")
 
+    def get_log_pis(
+            self,
+            multitask_obs,
+            tasks,
+            no_grad = True,
+            modes=["train"]
+        ) -> np.ndarray:
+            """Select/sample the action to perform.
+
+            Args:
+                multitask_obs (ObsType): Observation from the multitask environment.
+                mode (List[str]): mode in which to select the action.
+                sample (bool): sample (if `True`) or select (if `False`) an action.
+
+            Returns:
+                np.ndarray: selected/sample action.
+
+            """
+            log_pis, log_stds = [], []
+            env_obs = multitask_obs
+            env_index = tasks
+            env_index = env_index.to(self.device, non_blocking=True)
+            if no_grad:
+                with torch.no_grad():
+                    task_encoding = self.get_task_encoding(
+                        env_index=env_index, modes=modes, disable_grad=True
+                    )
+                    task_info = self.get_task_info(
+                        task_encoding=task_encoding, component_name="", env_index=env_index
+                    )
+                    obs = env_obs.float().to(self.device)
+                    if len(obs.shape) == 1 or len(obs.shape) == 3:
+                        obs = obs.unsqueeze(0)  # Make a batch
+                    mtobs = MTObs(env_obs=obs, task_obs=env_index, task_info=task_info)
+                    # pu.db
+                    # print("")
+                    mu, pi, log_pi, log_std = self.actor(mtobs=mtobs)
+            else:
+                with torch.set_grad_enabled(True):
+                    task_encoding = self.get_task_encoding(
+                        env_index=env_index, modes=modes, disable_grad=True
+                    )
+                    task_info = self.get_task_info(
+                        task_encoding=task_encoding, component_name="", env_index=env_index
+                    )
+                    obs = env_obs.float().to(self.device)
+                    if len(obs.shape) == 1 or len(obs.shape) == 3:
+                        obs = obs.unsqueeze(0)  # Make a batch
+                    mtobs = MTObs(env_obs=obs, task_obs=env_index, task_info=task_info)
+                    # pu.db
+                    # print("")
+                    mu, pi, log_pi, log_std = self.actor(mtobs=mtobs)
+            return log_pi, log_std
+
+
     def update(
         self,
         replay_buffer: ReplayBuffer,
@@ -648,116 +720,256 @@ class Agent(AbstractAgent):
                 buffer_index_to_sample is not set to None, return buffer_index_to_sample.
 
         """
+        if self.expert_file is "None":
+            if kwargs_to_compute_gradient is None:
+                kwargs_to_compute_gradient = {}
 
-        if kwargs_to_compute_gradient is None:
-            kwargs_to_compute_gradient = {}
+            if buffer_index_to_sample is None:
+                batch = replay_buffer.sample()
+            else:
+                batch = replay_buffer.sample(buffer_index_to_sample)
 
-        if buffer_index_to_sample is None:
-            batch = replay_buffer.sample()
+            logger.log("train/batch_reward", batch.reward.mean(), step)
+            if self.should_use_task_encoder:
+                self.task_encoder_optimizer.zero_grad()
+                task_encoding = self.get_task_encoding(
+                    env_index=batch.task_obs.squeeze(1),
+                    disable_grad=False,
+                    modes=["train"],
+                )
+            else:
+                task_encoding = None  # type: ignore[assignment]
+
+            task_info = self.get_task_info(
+                task_encoding=task_encoding,
+                component_name="critic",
+                env_index=batch.task_obs,
+            )
+            self.update_critic(
+                batch=batch,
+                task_info=task_info,
+                logger=logger,
+                step=step,
+                kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
+            )
+            if step % self.actor_update_freq == 0:
+                task_info = self.get_task_info(
+                    task_encoding=task_encoding,
+                    component_name="actor",
+                    env_index=batch.task_obs,
+                )
+                self.update_actor_and_alpha(
+                    batch=batch,
+                    task_info=task_info,
+                    logger=logger,
+                    step=step,
+                    kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
+                )
+            if step % self.critic_target_update_freq == 0:
+                agent_utils.soft_update_params(
+                    self.critic.Q1, self.critic_target.Q1, self.critic_tau
+                )
+                agent_utils.soft_update_params(
+                    self.critic.Q2, self.critic_target.Q2, self.critic_tau
+                )
+                agent_utils.soft_update_params(
+                    self.critic.encoder, self.critic_target.encoder, self.encoder_tau
+                )
+
+            if (
+                "transition_model" in self._components
+                and "reward_decoder" in self._components
+            ):
+                # some of the logic is a bit sketchy here. We will get to it soon.
+                task_info = self.get_task_info(
+                    task_encoding=task_encoding,
+                    component_name="transition_reward",
+                    env_index=batch.task_obs,
+                )
+                self.update_transition_reward_model(
+                    batch=batch,
+                    task_info=task_info,
+                    logger=logger,
+                    step=step,
+                    kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
+                )
+            if (
+                "decoder" in self._components  # should_update_decoder
+                and self.decoder is not None  # type: ignore[attr-defined]
+                and step % self.decoder_update_freq == 0  # type: ignore[attr-defined]
+            ):
+                task_info = self.get_task_info(
+                    task_encoding=task_encoding,
+                    component_name="decoder",
+                    env_index=batch.task_obs,
+                )
+                self.update_decoder(
+                    batch=batch,
+                    task_info=task_info,
+                    logger=logger,
+                    step=step,
+                    kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
+                )
+
+            if self.should_use_task_encoder:
+                task_info = self.get_task_info(
+                    task_encoding=task_encoding,
+                    component_name="task_encoder",
+                    env_index=batch.task_obs,
+                )
+                self.update_task_encoder(
+                    batch=batch,
+                    task_info=task_info,
+                    logger=logger,
+                    step=step,
+                    kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
+                )
+
+            return batch.buffer_index
         else:
-            batch = replay_buffer.sample(buffer_index_to_sample)
+            # pu.db
+            # print("")
+            for _ in range(self.epoch_disc):
+                self.learning_steps_disc += 1
+                # Samples from current policy's trajectories.
+                batch = replay_buffer.sample()
+                print("")
+                states, actions, dones, next_states, tasks = batch.env_obs, batch.action, batch.done, batch.next_env_obs, batch.task_obs # Samples from agent's demonstrations.
+                self.expert_batch = self.expert_buffer.sample()
+                states_exp, actions_exp, dones_exp, next_states_exp, tasks_exp =  self.expert_batch.env_obs, self.expert_batch.action, self.expert_batch.done, self.expert_batch.next_env_obs, self.expert_batch.task_obs # Samples from expert's demonstrations.
+                # Calculate log probabilities of expert actions.
+                with torch.no_grad():
+                    log_pis = self.get_log_pis(
+                        states, tasks)[0]
+                    log_pis_exp = self.get_log_pis(
+                        states_exp, tasks)[0]
+                # Update discriminator.
+                self.update_disc(
+                    states, dones, log_pis, next_states, states_exp,
+                    dones_exp, log_pis_exp, next_states_exp)
+
+            # We don't use reward signals here,
+            batch_here = replay_buffer.sample(index=range(self._p, self._p+self.global_config.replay_buffer.batch_size))
+            states, actions, dones, next_states, tasks = batch_here.env_obs, batch_here.action, batch_here.done, batch_here.next_env_obs, batch_here.task_obs # Samples from agent's demonstrations.
+            log_pis = self.get_log_pis(
+                states, tasks)[0]
+            self._p += self.global_config.replay_buffer.batch_size
+
+            # Calculate rewards.
+            rewards = self.disc.calculate_reward(
+                states, dones, log_pis, next_states)
+
+            # pu.db
+            # print("")
+            # Update PPO using estimated rewards.
+            self.update_ppo(
+                states, actions, rewards, dones, log_pis, next_states, tasks)
+
+    def update_ppo(self, states, actions, rewards, dones, log_pis, next_states, tasks):
+        task_encoding = self.get_task_encoding(
+            env_index=tasks, modes=["train"], disable_grad=True
+        )
+        task_info = self.get_task_info(
+            task_encoding=task_encoding, component_name="", env_index=tasks
+        )
+        obs = states.float().to(self.device)
+        next_obs = next_states.float().to(self.device)
+        if len(obs.shape) == 1 or len(obs.shape) == 3:
+            obs = obs.unsqueeze(0)  # Make a batch
+        mtobs = MTObs(env_obs=obs, task_obs=tasks, task_info=task_info)
+        if len(next_obs.shape) == 1 or len(next_obs.shape) == 3:
+            next_obs = next_obs.unsqueeze(0)  # Make a batch
+        next_mtobs = MTObs(env_obs=next_obs, task_obs=tasks, task_info=task_info)
+        
+        with torch.no_grad():
+            next_values = self.critic(next_mtobs, actions)[0] ## VERIFY
+        values = self.critic(mtobs, actions)[0]
+
+        targets, gaes = calculate_gae(
+            values, rewards, dones, next_values, gamma=0.995, lambd=0.97)
+
+        for _ in range(10):
+            self.learning_steps_ppo += 1
+            self.update_critic(states, actions, targets, tasks)
+            self.update_actor(states, actions, log_pis, gaes, tasks)
+
+    def update_critic(self, states, actions, targets, tasks):
+            # pu.db
+            # print("")
+            self.optim_critic.zero_grad()
+
+            task_encoding = self.get_task_encoding(
+                env_index=tasks, modes=["train"], disable_grad=True
+            )
+            task_info = self.get_task_info(
+                task_encoding=task_encoding, component_name="", env_index=tasks
+            )
+            obs = states.float().to(self.device)
+            mtobs = MTObs(env_obs=obs, task_obs=tasks, task_info=task_info)
+            values = self.critic(mtobs, actions)[0]
+
+            loss_critic = (values - targets.detach()).pow_(2).mean()
+            try:
+                loss_critic.backward(retain_graph=False)
+            except:
+                pu.db
+                print("")
+            
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 10.0)
+            self.optim_critic.step()
+
+            # if self.learning_steps_ppo % self.epoch_ppo == 0:
+            #     writer.add_scalar(
+            #         'loss/critic', loss_critic.item(), self.learning_steps)
+
+    def update_actor(self, states, actions, log_pis_old, gaes, tasks):
+        log_pis = self.get_log_pis(states, tasks, no_grad=False)[0]
+        entropy = -log_pis.mean()
+
+        ratios = (log_pis - log_pis_old).exp_()
+        loss_actor1 = -ratios * gaes
+        loss_actor2 = -torch.clamp(
+            ratios,
+            1.0 - 0.2,
+            1.0 + 0.2
+        ) * gaes
+        loss_actor = torch.max(loss_actor1, loss_actor2).mean()
+
         # pu.db
         # print("")
-        self.expert_batch = self.expert_buffer.sample()
-        # pass
-        logger.log("train/batch_reward", batch.reward.mean(), step)
-        if self.should_use_task_encoder:
-            self.task_encoder_optimizer.zero_grad()
-            task_encoding = self.get_task_encoding(
-                env_index=batch.task_obs.squeeze(1),
-                disable_grad=False,
-                modes=["train"],
-            )
-        else:
-            task_encoding = None  # type: ignore[assignment]
+        loss_actor.backward(retain_graph=False)
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 10.0)
+        self.optim_actor.step()
+        self.optim_actor.zero_grad()
 
-        task_info = self.get_task_info(
-            task_encoding=task_encoding,
-            component_name="critic",
-            env_index=batch.task_obs,
-        )
-        self.update_critic(
-            batch=batch,
-            task_info=task_info,
-            logger=logger,
-            step=step,
-            kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
-        )
-        if step % self.actor_update_freq == 0:
-            task_info = self.get_task_info(
-                task_encoding=task_encoding,
-                component_name="actor",
-                env_index=batch.task_obs,
-            )
-            self.update_actor_and_alpha(
-                batch=batch,
-                task_info=task_info,
-                logger=logger,
-                step=step,
-                kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
-            )
-        if step % self.critic_target_update_freq == 0:
-            agent_utils.soft_update_params(
-                self.critic.Q1, self.critic_target.Q1, self.critic_tau
-            )
-            agent_utils.soft_update_params(
-                self.critic.Q2, self.critic_target.Q2, self.critic_tau
-            )
-            agent_utils.soft_update_params(
-                self.critic.encoder, self.critic_target.encoder, self.encoder_tau
-            )
 
-        if (
-            "transition_model" in self._components
-            and "reward_decoder" in self._components
-        ):
-            # some of the logic is a bit sketchy here. We will get to it soon.
-            task_info = self.get_task_info(
-                task_encoding=task_encoding,
-                component_name="transition_reward",
-                env_index=batch.task_obs,
-            )
-            self.update_transition_reward_model(
-                batch=batch,
-                task_info=task_info,
-                logger=logger,
-                step=step,
-                kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
-            )
-        if (
-            "decoder" in self._components  # should_update_decoder
-            and self.decoder is not None  # type: ignore[attr-defined]
-            and step % self.decoder_update_freq == 0  # type: ignore[attr-defined]
-        ):
-            task_info = self.get_task_info(
-                task_encoding=task_encoding,
-                component_name="decoder",
-                env_index=batch.task_obs,
-            )
-            self.update_decoder(
-                batch=batch,
-                task_info=task_info,
-                logger=logger,
-                step=step,
-                kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
-            )
 
-        if self.should_use_task_encoder:
-            task_info = self.get_task_info(
-                task_encoding=task_encoding,
-                component_name="task_encoder",
-                env_index=batch.task_obs,
-            )
-            self.update_task_encoder(
-                batch=batch,
-                task_info=task_info,
-                logger=logger,
-                step=step,
-                kwargs_to_compute_gradient=deepcopy(kwargs_to_compute_gradient),
-            )
 
-        return batch.buffer_index
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        # self.update_c
     def get_parameters(self, name: str) -> List[torch.nn.parameter.Parameter]:
         """Get parameters corresponding to a given component.
 
@@ -778,7 +990,7 @@ class Agent(AbstractAgent):
 
     def update_disc(self, states, dones, log_pis, next_states,
                     states_exp, dones_exp, log_pis_exp,
-                    next_states_exp, writer):
+                    next_states_exp):
         # Output of discriminator is (-inf, inf), not [0, 1].
         logits_pi = self.disc(states, dones, log_pis, next_states)
         logits_exp = self.disc(
@@ -794,12 +1006,12 @@ class Agent(AbstractAgent):
         self.optim_disc.step()
 
         if self.learning_steps_disc % self.epoch_disc == 0:
-            writer.add_scalar(
-                'loss/disc', loss_disc.item(), self.learning_steps)
+            # writer.add_scalar(
+            #     'loss/disc', loss_disc.item(), self.learning_steps)
 
             # Discriminator's accuracies.
             with torch.no_grad():
                 acc_pi = (logits_pi < 0).float().mean().item()
                 acc_exp = (logits_exp > 0).float().mean().item()
-            writer.add_scalar('stats/acc_pi', acc_pi, self.learning_steps)
-            writer.add_scalar('stats/acc_exp', acc_exp, self.learning_steps)
+            # writer.add_scalar('stats/acc_pi', acc_pi, self.learning_steps)
+            # writer.add_scalar('stats/acc_exp', acc_exp, self.learning_steps)

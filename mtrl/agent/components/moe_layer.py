@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 import torch
 from torch import nn
-
+import pudb
 from mtrl.agent import utils as agent_utils
 from mtrl.agent.ds.task_info import TaskInfo
 from mtrl.utils.types import ConfigType, TensorType
@@ -236,7 +236,9 @@ class AttentionBasedExperts(MixtureOfExperts):
             if len(env_index.shape) == 2:
                 env_index = env_index.squeeze(1)
             emb = self.emb(env_index)
-        output = self.trunk(emb)
+        try:
+            output = self.trunk(emb)
+        except: pu.db
         gate = self._softmax(output / self.temperature)
         if not self.should_use_soft_attention:
             topk_attention = gate.topk(self.topk, dim=1)
@@ -247,7 +249,7 @@ class AttentionBasedExperts(MixtureOfExperts):
             gate = gate * hard_attention_mask
             gate = gate / gate.sum(dim=1).unsqueeze(1)
         if len(gate.shape) > 2:
-            breakpoint()
+            return gate.squeeze(1).t().unsqueeze(2)
         return gate.t().unsqueeze(2)
 
 
